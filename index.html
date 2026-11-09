@@ -2,7 +2,7 @@
 <html lang="nl">
 <head>
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self'; manifest-src 'self'; frame-src https://script.google.com https://*.googleusercontent.com; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' data: https:; font-src data:; connect-src https://script.google.com https://script.googleusercontent.com; manifest-src 'self'; base-uri 'self'; form-action 'none'">
 <meta name="referrer" content="no-referrer">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -14,40 +14,75 @@
 <link rel="manifest" href="manifest.json">
 <title>HealthTracker</title>
 <style>
-  html, body { margin: 0; height: 100%; background: #000; color: #fff; font: 17px -apple-system, system-ui, sans-serif; overflow: hidden; }
+  html, body { margin: 0; min-height: 100%; background: #000; color: #fff; font: 17px -apple-system, system-ui, sans-serif; }
   @media (prefers-color-scheme: light) { html, body { background: #f2f2f7; color: #000; } }
-  iframe { position: fixed; inset: 0; width: 100vw; height: 100vh; height: 100dvh; border: 0; display: none; }
-  #sleutel { display: none; padding: calc(env(safe-area-inset-top) + 40px) 24px 24px; max-width: 420px; margin: 0 auto; }
-  #sleutel input { width: 100%; box-sizing: border-box; font-size: 17px; padding: 12px; border-radius: 12px; border: 1px solid #8e8e93; margin: 12px 0; }
-  #sleutel button { width: 100%; font-size: 17px; font-weight: 600; padding: 13px; border: 0; border-radius: 12px; background: #0a84ff; color: #fff; }
+  .blok { display: none; padding: calc(env(safe-area-inset-top) + 40px) 24px 24px; max-width: 420px; margin: 0 auto; }
+  input { width: 100%; box-sizing: border-box; font-size: 17px; padding: 12px; border-radius: 12px; border: 1px solid #8e8e93; margin: 12px 0; }
+  button { width: 100%; font-size: 17px; font-weight: 600; padding: 13px; border: 0; border-radius: 12px; background: #0a84ff; color: #fff; }
   p { color: #8e8e93; font-size: 15px; line-height: 1.4; }
 </style>
 </head>
 <body>
-<!-- Beginschermpagina voor de HealthTracker-app (Apps Script). Deze pagina stelt de statusbalk in, wat Apps Script zelf niet toelaat,
-     en toont de app schermvullend in een iframe. De appsleutel staat NIET in deze (openbare) pagina: die komt uit #k=... in de link
-     op het beginscherm (het deel na # wordt nooit naar GitHub verstuurd), of wordt één keer gevraagd en enkel op het toestel bewaard.
-     De pagina laadt geen externe scripts en mag enkel de HealthTracker-app van Google insluiten (Content-Security-Policy). -->
-<div id="sleutel">
+<!-- Beginschermpagina voor de HealthTracker-app. Deze openbare pagina bevat geen gegevens en geen appsleutel.
+     Ze haalt de app op bij het eigen Google Apps Script (alleen met de juiste sleutel) en praat er daarna mee via fetch,
+     zonder Google-cookies en zonder iframe. De sleutel komt uit #k=... in de link op het beginscherm (het deel na # wordt
+     nooit naar GitHub verstuurd) of wordt één keer gevraagd, en blijft enkel op dit toestel bewaard. -->
+<div id="laden" class="blok"><h2>HealthTracker</h2><p>Laden&hellip;</p></div>
+<div id="sleutel" class="blok">
   <h2>HealthTracker</h2>
-  <p>Geef één keer je appsleutel in. Die blijft enkel op dit toestel bewaard.</p>
+  <p id="uitleg">Geef één keer je appsleutel in. Die blijft enkel op dit toestel bewaard.</p>
   <input id="k" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="appsleutel">
   <button onclick="bewaar()">Openen</button>
 </div>
-<iframe id="app" title="HealthTracker" referrerpolicy="no-referrer"></iframe>
 <script>
   var EXEC = 'https://script.google.com/macros/s/AKfycbz3t_hk_q5_aivg3KNrg0H-dJUr0fRPdtXGsIeNP-gWmXUYNfFGK5qYP-rAdYZYHt-8/exec';
   function lees() { try { return localStorage.getItem('ht_k') || ''; } catch (e) { return ''; } }
-  function zet(k) { try { localStorage.setItem('ht_k', k); } catch (e) {} }
-  function toon(k) {
-    var f = document.getElementById('app');
-    f.src = EXEC + '?p=app&k=' + encodeURIComponent(k);
-    f.style.display = 'block';
-    document.getElementById('sleutel').style.display = 'none';
+  function zet(k) { try { if (k) localStorage.setItem('ht_k', k); else localStorage.removeItem('ht_k'); } catch (e) {} }
+  function toon(id) { ['laden', 'sleutel'].forEach(function (x) { document.getElementById(x).style.display = x === id ? 'block' : 'none'; }); }
+  function api(f, a) {
+    return fetch(EXEC + '?p=api', { method: 'POST', body: JSON.stringify({ f: f, a: a }), credentials: 'omit', redirect: 'follow' })
+      .then(function (r) { return r.json(); })
+      .then(function (j) { if (!j.ok) throw new Error(j.fout || 'fout'); return j.r; });
   }
-  function bewaar() { var k = document.getElementById('k').value.trim(); if (!k) return; zet(k); toon(k); }
-  var k = new URLSearchParams(location.hash.slice(1)).get('k') || lees();
-  if (k) { zet(k); toon(k); } else document.getElementById('sleutel').style.display = 'block';
+  // Vervangt google.script.run en google.script.url in de app, zodat dezelfde App.html hier werkt.
+  function shim(EXEC, K) {
+    function api(f, a) {
+      return fetch(EXEC + '?p=api', { method: 'POST', body: JSON.stringify({ f: f, a: a }), credentials: 'omit', redirect: 'follow' })
+        .then(function (r) { return r.json(); })
+        .then(function (j) { if (!j.ok) throw new Error(j.fout || 'fout'); return j.r; });
+    }
+    function runner(ok, fail) {
+      return new Proxy({}, { get: function (_, naam) {
+        if (naam === 'withSuccessHandler') return function (f) { return runner(f, fail); };
+        if (naam === 'withFailureHandler') return function (f) { return runner(ok, f); };
+        if (naam === 'withUserObject') return function () { return runner(ok, fail); };
+        return function () {
+          var a = Array.prototype.slice.call(arguments);
+          api(naam, a).then(function (r) { if (ok) ok(r); }, function (e) { if (fail) fail(e); else console.error(e); });
+        };
+      } });
+    }
+    var p = {}; new URLSearchParams(location.hash.slice(1)).forEach(function (v, k) { p[k] = v; }); delete p.k; p.k = K;
+    window.google = { script: { run: runner(null, null), url: { getLocation: function (cb) { cb({ parameter: p, hash: '' }); } } } };
+  }
+  function start(k) {
+    toon('laden');
+    api('appBron', [k]).then(function (html) {
+      zet(k);
+      var s = '<script>(' + shim.toString() + ')(' + JSON.stringify(EXEC) + ',' + JSON.stringify(k) + ');<\/script>';
+      // de tags van deze pagina (viewport, statusbalk, icoon, beveiliging) meenemen in de app
+      var meta = Array.prototype.map.call(document.querySelectorAll('head meta:not([charset]), head link'), function (e) { return e.outerHTML; }).join('') + '<title>HealthTracker</title>';
+      html = html.replace(/<head>/i, function (m) { return m + meta + s; });
+      document.open(); document.write(html); document.close();
+    }, function (e) {
+      if (/sleutel/.test(e.message)) { zet(''); document.getElementById('uitleg').textContent = 'Die sleutel klopt niet. Probeer opnieuw.'; }
+      else document.getElementById('uitleg').textContent = 'Laden lukte niet (' + e.message + '). Controleer je verbinding en probeer opnieuw.';
+      toon('sleutel');
+    });
+  }
+  function bewaar() { var k = document.getElementById('k').value.trim(); if (k) start(k); }
+  var k0 = new URLSearchParams(location.hash.slice(1)).get('k') || lees();
+  if (k0) start(k0); else toon('sleutel');
 </script>
 </body>
 </html>
