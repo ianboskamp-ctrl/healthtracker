@@ -45,8 +45,17 @@
       .then(function (j) { if (!j.ok) throw new Error(j.fout || 'fout'); return j.r; });
   }
   // Vervangt google.script.run en google.script.url in de app, zodat dezelfde App.html hier werkt.
+  // Snelheid: de laatste antwoorden van de leesfuncties staan op het toestel. De app toont die meteen en krijgt
+  // daarna het verse antwoord, maar enkel als dat verschilt. Na elke opslag wordt dat geheugen gewist.
   function shim(EXEC, K) {
+    var OPSLAG = ['appLaad', 'appLaadReeks', 'appDashboard', 'appFitness'];
+    function vandaag() { var d = new Date(); return d.getFullYear() + '-' + ('0' + (d.getMonth() + 1)).slice(-2) + '-' + ('0' + d.getDate()).slice(-2); }
+    function lees(s) { try { return localStorage.getItem(s); } catch (e) { return null; } }
+    function zet(s, v) { try { localStorage.setItem(s, v); } catch (e) { wis(); } }
+    function wis() { try { for (var i = localStorage.length - 1; i >= 0; i--) { var k = localStorage.key(i); if (k && k.indexOf('ht_c_') === 0) localStorage.removeItem(k); } } catch (e) {} }
     function api(f, a) {
+      var id = f + JSON.stringify(a.slice(1)), pre = window.__HT_PRE && window.__HT_PRE[id];
+      if (pre) { delete window.__HT_PRE[id]; return pre; }
       return fetch(EXEC + '?p=api', { method: 'POST', body: JSON.stringify({ f: f, a: a }), credentials: 'omit', redirect: 'follow' })
         .then(function (r) { return r.json(); })
         .then(function (j) { if (!j.ok) throw new Error(j.fout || 'fout'); return j.r; });
@@ -57,23 +66,45 @@
         if (naam === 'withFailureHandler') return function (f) { return runner(ok, f); };
         if (naam === 'withUserObject') return function () { return runner(ok, fail); };
         return function () {
-          var a = Array.prototype.slice.call(arguments);
-          api(naam, a).then(function (r) { if (ok) ok(r); }, function (e) { if (fail) fail(e); else console.error(e); });
+          var a = Array.prototype.slice.call(arguments), s = OPSLAG.indexOf(naam) >= 0 ? 'ht_c_' + naam + '_' + JSON.stringify(a.slice(1)) : null, oud = null;
+          if (s && ok) {
+            oud = lees(s);
+            if (oud) {
+              var c = null; try { c = JSON.parse(oud); } catch (e) { oud = null; }
+              if (naam === 'appLaad' && !a[1] && c && c.datum !== vandaag()) oud = null; // gisteren bewaard: niet tonen
+              if (oud) setTimeout(function () { ok(c); }, 0);
+            }
+          }
+          api(naam, a).then(function (r) {
+            var t = s ? JSON.stringify(r) : null;
+            if (s) zet(s, t);
+            if (/^app(Bewaar|Zet|Nieuw|Voeg)/.test(naam)) wis(); // na opslaan: geen oude gegevens meer tonen
+            if (ok && (!s || t !== oud)) ok(r);
+          }, function (e) { if (fail) fail(e); else console.error(e); });
         };
       } });
     }
     var p = {}; new URLSearchParams(location.hash.slice(1)).forEach(function (v, k) { p[k] = v; }); delete p.k; p.k = K;
     window.google = { script: { run: runner(null, null), url: { getLocation: function (cb) { cb({ parameter: p, hash: '' }); } } } };
+    // de app zelf op de achtergrond verversen voor de volgende keer
+    setTimeout(function () { api('appBron', [K]).then(function (h) { if (h && h !== lees('ht_bron')) zet('ht_bron', h); }, function () {}); }, 4000);
+  }
+  function teken(html, k) {
+    var s = '<script>(' + shim.toString() + ')(' + JSON.stringify(EXEC) + ',' + JSON.stringify(k) + ');<\/script>';
+    // de tags van deze pagina (viewport, statusbalk, icoon, beveiliging) meenemen in de app
+    var meta = Array.prototype.map.call(document.querySelectorAll('head meta:not([charset]), head link'), function (e) { return e.outerHTML; }).join('') + '<title>HealthTracker</title>';
+    html = html.replace(/<head>/i, function (m) { return m + meta + s; });
+    document.open(); document.write(html); document.close();
   }
   function start(k) {
+    // gegevens van vandaag al ophalen terwijl de app laadt
+    window.__HT_PRE = { 'appLaad[""]': api('appLaad', [k, '']) };
+    var bron = null; try { bron = localStorage.getItem('ht_bron'); } catch (e) {}
+    if (bron) { teken(bron, k); return; } // app staat al op het toestel: meteen tonen
     toon('laden');
     api('appBron', [k]).then(function (html) {
-      zet(k);
-      var s = '<script>(' + shim.toString() + ')(' + JSON.stringify(EXEC) + ',' + JSON.stringify(k) + ');<\/script>';
-      // de tags van deze pagina (viewport, statusbalk, icoon, beveiliging) meenemen in de app
-      var meta = Array.prototype.map.call(document.querySelectorAll('head meta:not([charset]), head link'), function (e) { return e.outerHTML; }).join('') + '<title>HealthTracker</title>';
-      html = html.replace(/<head>/i, function (m) { return m + meta + s; });
-      document.open(); document.write(html); document.close();
+      zet(k); try { localStorage.setItem('ht_bron', html); } catch (e) {}
+      teken(html, k);
     }, function (e) {
       if (/sleutel/.test(e.message)) { zet(''); document.getElementById('uitleg').textContent = 'Die sleutel klopt niet. Probeer opnieuw.'; }
       else document.getElementById('uitleg').textContent = 'Laden lukte niet (' + e.message + '). Controleer je verbinding en probeer opnieuw.';
